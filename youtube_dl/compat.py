@@ -21,6 +21,7 @@ import socket
 import struct
 import subprocess
 import sys
+import types
 import xml.etree.ElementTree
 
 # naming convention
@@ -35,7 +36,7 @@ try:
     )
 except NameError:
     compat_str, compat_basestring, compat_chr = (
-        str, str, chr
+        str, (str, bytes), chr
     )
 
 # casefold
@@ -54,6 +55,22 @@ try:
     import urllib.request as compat_urllib_request
 except ImportError:  # Python 2
     import urllib2 as compat_urllib_request
+
+# Also fix up lack of method arg in old Pythons
+try:
+    _req = compat_urllib_request.Request
+    _req('http://127.0.0.1', method='GET')
+except TypeError:
+    class _request(object):
+        def __new__(cls, url, *args, **kwargs):
+            method = kwargs.pop('method', None)
+            r = _req(url, *args, **kwargs)
+            if method:
+                r.get_method = types.MethodType(lambda _: method, r)
+            return r
+
+    compat_urllib_request.Request = _request
+
 
 try:
     import urllib.error as compat_urllib_error
@@ -80,6 +97,12 @@ except ImportError:  # Python 2
     import urllib as compat_urllib_response
 
 try:
+    compat_urllib_response.addinfourl.status
+except AttributeError:
+    # .getcode() is deprecated in Py 3.
+    compat_urllib_response.addinfourl.status = property(lambda self: self.getcode())
+
+try:
     import http.cookiejar as compat_cookiejar
 except ImportError:  # Python 2
     import cookielib as compat_cookiejar
@@ -103,12 +126,24 @@ except ImportError:  # Python 2
     import Cookie as compat_cookies
 compat_http_cookies = compat_cookies
 
-if sys.version_info[0] == 2:
+if sys.version_info[0] == 2 or sys.version_info < (3, 3):
     class compat_cookies_SimpleCookie(compat_cookies.SimpleCookie):
         def load(self, rawdata):
-            if isinstance(rawdata, compat_str):
-                rawdata = str(rawdata)
-            return super(compat_cookies_SimpleCookie, self).load(rawdata)
+            must_have_value = 0
+            if not isinstance(rawdata, dict):
+                if sys.version_info[:2] != (2, 7) or sys.platform.startswith('java'):
+                    # attribute must have value for parsing
+                    rawdata, must_have_value = re.subn(
+                        r'(?i)(;\s*)(secure|httponly)(\s*(?:;|$))', r'\1\2=\2\3', rawdata)
+                if sys.version_info[0] == 2:
+                    if isinstance(rawdata, compat_str):
+                        rawdata = str(rawdata)
+            super(compat_cookies_SimpleCookie, self).load(rawdata)
+            if must_have_value > 0:
+                for morsel in self.values():
+                    for attr in ('secure', 'httponly'):
+                        if morsel.get(attr):
+                            morsel[attr] = True
 else:
     compat_cookies_SimpleCookie = compat_cookies.SimpleCookie
 compat_http_cookies_SimpleCookie = compat_cookies_SimpleCookie
@@ -2360,6 +2395,11 @@ try:
     import http.client as compat_http_client
 except ImportError:  # Python 2
     import httplib as compat_http_client
+try:
+    compat_http_client.HTTPResponse.getcode
+except AttributeError:
+    # Py < 3.1
+    compat_http_client.HTTPResponse.getcode = lambda self: self.status
 
 try:
     from urllib.error import HTTPError as compat_HTTPError
@@ -3160,6 +3200,18 @@ except AttributeError:
     def compat_datetime_timedelta_total_seconds(td):
         return (td.microseconds + (td.seconds + td.days * 24 * 3600) * 10**6) / 10**6
 
+# optional decompression packages
+# PyPi brotli package implements 'br' Content-Encoding
+try:
+    import brotli as compat_brotli
+except ImportError:
+    compat_brotli = None
+# PyPi ncompress package implements 'compress' Content-Encoding
+try:
+    import ncompress as compat_ncompress
+except ImportError:
+    compat_ncompress = None
+
 
 legacy = [
     'compat_HTMLParseError',
@@ -3194,6 +3246,7 @@ __all__ = [
     'compat_Struct',
     'compat_base64_b64decode',
     'compat_basestring',
+    'compat_brotli',
     'compat_casefold',
     'compat_chr',
     'compat_collections_abc',
@@ -3219,6 +3272,7 @@ __all__ = [
     'compat_itertools_zip_longest',
     'compat_kwargs',
     'compat_map',
+    'compat_ncompress',
     'compat_numeric_types',
     'compat_open',
     'compat_ord',
